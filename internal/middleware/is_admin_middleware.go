@@ -6,10 +6,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
-	"gorm.io/gorm"
 )
 
-func IsAdminLogged(db *gorm.DB, redis *redis.Client) gin.HandlerFunc {
+func IsAdminLogged(userRepo repository.UserRepository, redis *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID, exists := c.Get("user_id")
 		if !exists {
@@ -20,8 +19,6 @@ func IsAdminLogged(db *gorm.DB, redis *redis.Client) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-
-		userRepo := repository.NewUserRepository(db, redis)
 
 		user, err := userRepo.GetUserByID(uint64(userID.(uint)))
 		if err != nil {

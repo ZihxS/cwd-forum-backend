@@ -6,6 +6,7 @@ import (
 	"gin-quickstart/pkg/logger"
 	"gin-quickstart/pkg/worker"
 	"gin-quickstart/routes"
+	"os"
 )
 
 func main() {
@@ -24,12 +25,10 @@ func main() {
 	}
 	defer redis.Close()
 
-	log, err := logger.New(logger.Config{
-		Production: true,
-	})
-	if err != nil {
-		panic("failed to initialize logger: " + err.Error())
-	}
+	isProduction := os.Getenv("LOG_IS_PRODUCTION") == "true"
+	logLevel := os.Getenv("LOG_LEVEL")
+	isDisableStackTrace := os.Getenv("DISABLE_STACK_TRACE") == "true"
+	log := logger.NewLogger(isProduction, logLevel, isDisableStackTrace)
 
 	worker := worker.NewWorker(20)
 
