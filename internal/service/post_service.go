@@ -19,7 +19,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"gorm.io/gorm"
 )
 
 type PostService struct {
@@ -444,60 +443,31 @@ func (s *PostService) Update(
 }
 
 func (s *PostService) Delete(ID uint64, ctx *gin.Context) error {
-	post, err := s.r.GetPostByID(ID)
-
+	result, err := s.r.DeleteTree(ID)
 	if err != nil {
 		return err
 	}
 
-	if post == nil {
-		return errors.New("Post not found")
+	post := result.Post
+
+	cacheKeys := []string{
+		"post:id:" + strconv.FormatUint(uint64(post.ID), 10),
+		"posts",
+		"posts:author_id:" + strconv.FormatUint(uint64(post.AuthorID), 10),
+		"posts:thread_id:" + strconv.FormatUint(uint64(post.ThreadID), 10),
 	}
 
-	replies := post.Posts
-
-	for _, reply := range replies {
-		err = s.Delete(uint64(reply.ID), ctx)
-
-		if err != nil {
-			return err
-		}
+	if post.ParentID != nil {
+		cacheKeys = append(cacheKeys, "post:parent:"+strconv.FormatUint(uint64(*post.ParentID), 10))
 	}
 
-	delErr := s.r.Delete(post)
-
-	if delErr != nil {
-		return delErr
+	for _, parentID := range result.ParentIDs {
+		cacheKeys = append(cacheKeys, "post:parent:"+strconv.FormatUint(uint64(parentID), 10))
 	}
 
-	delParentStatus := s.r.RedisClient.Del(ctx, "post:id:"+strconv.FormatUint(uint64(post.ID), 10))
-
-	if delParentStatus.Err() != nil {
-		return delParentStatus.Err()
-	}
-
-	delPostsStatus := s.r.RedisClient.Del(ctx, "posts")
-
-	if delPostsStatus.Err() != nil {
-		return delPostsStatus.Err()
-	}
-
-	delParentPostsStatus := s.r.RedisClient.Del(ctx, "post:parent:"+strconv.FormatUint(uint64(*post.ParentID), 10))
-
-	if delParentPostsStatus.Err() != nil {
-		return delParentPostsStatus.Err()
-	}
-
-	delAuthorStatus := s.r.RedisClient.Del(ctx, "posts:author_id:"+strconv.FormatUint(uint64(post.AuthorID), 10))
-
-	if delAuthorStatus.Err() != nil {
-		return delAuthorStatus.Err()
-	}
-
-	delThreadStatus := s.r.RedisClient.Del(ctx, "posts:thread_id:"+strconv.FormatUint(uint64(post.ThreadID), 10))
-
-	if delThreadStatus.Err() != nil {
-		return delThreadStatus.Err()
+	delStatus := s.r.RedisClient.Del(ctx, cacheKeys...)
+	if delStatus.Err() != nil {
+		return delStatus.Err()
 	}
 
 	return nil
@@ -522,16 +492,13 @@ func (s *PostService) Vote(postID uint64, userID uint64, value int, ctx *gin.Con
 
 	isUpvote := voteValue == enum.VoteUp
 
-	var vote model.Vote
-
-	fErr := s.r.GormDB.Where("post_id = ? AND user_id = ?", post.ID, userID).First(&vote).Error
-
-	if fErr != nil && err != gorm.ErrRecordNotFound {
-		return fErr
+	vote, err := s.r.GetVoteByPostAndUserID(postID, userID)
+	if err != nil {
+		return err
 	}
 
-	if err == gorm.ErrRecordNotFound {
-		vote = model.Vote{
+	if vote == nil {
+		vote = &model.Vote{
 			PostID: post.ID,
 			UserID: uint(userID),
 			Value:  0,
@@ -540,21 +507,23 @@ func (s *PostService) Vote(postID uint64, userID uint64, value int, ctx *gin.Con
 
 	if isUpvote {
 		post.VoteScore = post.VoteScore + 1
-		s.r.GormDB.Save(post)
+		if err := s.r.Save(post); err != nil {
+			return err
+		}
 
 		vote.Value = int(enum.VoteUp)
-		return s.r.GormDB.Save(&vote).Error
+		return s.r.SaveVote(vote)
 	}
 
 	post.VoteScore = post.VoteScore - 1
-	s.r.GormDB.Save(post)
+	if err := s.r.Save(post); err != nil {
+		return err
+	}
 
 	vote.Value = int(enum.VoteDown)
 
-	uErr := s.r.GormDB.Save(&vote).Error
-
-	if uErr != nil {
-		return uErr
+	if err := s.r.SaveVote(vote); err != nil {
+		return err
 	}
 
 	delStatus := s.r.RedisClient.Del(ctx, "post:votes:"+strconv.FormatUint(postID, 10))
@@ -589,33 +558,16 @@ func (s *PostService) React(postID uint64, userID uint64, emoji int, ctx *gin.Co
 		Emoji:  emojiValue.String(),
 	}
 
-	var existsReaction model.Reaction
-
-	fErr := s.r.GormDB.
-		Where("post_id = ? AND user_id = ?", post.ID, userID).
-		First(&existsReaction).Error
-
-	if fErr != nil && err != gorm.ErrRecordNotFound {
-		return fErr
+	existsReaction, err := s.r.GetReactionByPostAndUserID(postID, userID)
+	if err != nil {
+		return err
 	}
 
-	if existsReaction.ID != 0 {
-		return s.r.GormDB.Delete(&existsReaction).Error
+	if existsReaction != nil {
+		return s.r.DeleteReaction(existsReaction)
 	}
 
-	if existsReaction.Emoji == reaction.Emoji {
-		return s.r.GormDB.Delete(&existsReaction).Error
-	}
-
-	if existsReaction.Emoji != reaction.Emoji {
-		err = s.r.GormDB.Delete(&existsReaction).Error
-		if err != nil {
-			return err
-		}
-	}
-
-	err = s.r.GormDB.Create(&reaction).Error
-
+	err = s.r.CreateReaction(&reaction)
 	if err != nil {
 		return err
 	}
@@ -640,14 +592,12 @@ func (s *PostService) MarkAsSolution(postID uint64, userID uint64, ctx *gin.Cont
 		return errors.New("Post not found")
 	}
 
-	var thread model.Thread
-	err = s.r.GormDB.Where("id = ?", post.ThreadID).First(&thread).Error
-
+	thread, err := s.r.GetThreadByID(uint64(post.ThreadID))
 	if err != nil {
 		return err
 	}
 
-	if thread.ID == 0 {
+	if thread == nil {
 		return errors.New("Thread not found")
 	}
 
@@ -659,30 +609,16 @@ func (s *PostService) MarkAsSolution(postID uint64, userID uint64, ctx *gin.Cont
 		return errors.New("Unauthorized")
 	}
 
-	posts := thread.Posts
-
-	var hasSolution bool
-
-	for _, p := range posts {
-		if p.ID == post.ID {
-			continue
-		}
-
-		if p.IsSolution {
-			hasSolution = true
-		}
+	hasSolution, err := s.r.ThreadHasSolutionExcludingPost(post.ThreadID, post.ID)
+	if err != nil {
+		return err
 	}
-
 	if hasSolution {
 		return errors.New("Thread already has a solution")
 	}
 
-	uErr := s.r.GormDB.Model(&model.Post{}).
-		Where("id = ?", postID).
-		Update("is_solution", true).Error
-
-	if uErr != nil {
-		return uErr
+	if err := s.r.MarkAsSolution(postID); err != nil {
+		return err
 	}
 
 	delStatus := s.r.RedisClient.Del(ctx, "post:parent:"+strconv.FormatUint(uint64(post.ID), 10))

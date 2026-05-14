@@ -60,7 +60,7 @@ func (r UserRepository) GetUserByEmail(email string) (*model.User, error) {
 func (r UserRepository) GetFollowers(userID uint64) ([]model.User, error) {
 	var followers []model.User
 	err := r.GormDB.Joins("JOIN user_users ON user_users.follower_id = users.id").
-		Where("user_users.user_id = ?", userID).
+		Where("user_users.followed_id = ?", userID).
 		Find(&followers).Error
 	if err != nil {
 		return nil, err
@@ -70,7 +70,7 @@ func (r UserRepository) GetFollowers(userID uint64) ([]model.User, error) {
 
 func (r UserRepository) GetFollowing(userID uint64) ([]model.User, error) {
 	var following []model.User
-	err := r.GormDB.Joins("JOIN user_users ON user_users.user_id = users.id").
+	err := r.GormDB.Joins("JOIN user_users ON user_users.followed_id = users.id").
 		Where("user_users.follower_id = ?", userID).
 		Find(&following).Error
 	if err != nil {

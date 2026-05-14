@@ -78,6 +78,10 @@ func (r *AuthRepository) UpdateProfile(
 	return r.GormDB.Save(&user).Error
 }
 
+func (r *AuthRepository) UpdateLastLogin(user *model.User) error {
+	return r.GormDB.Save(user).Error
+}
+
 func (r *AuthRepository) Logout(userID uint64) error {
 	var user model.User
 	err := r.GormDB.First(&user, userID).Error

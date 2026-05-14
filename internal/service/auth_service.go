@@ -52,7 +52,7 @@ func (s *AuthService) Login(
 
 	s.r.RedisClient.Set(ctx, token, user.ID, time.Hour*24)
 
-	err = s.r.GormDB.Save(&user).Error
+	err = s.r.UpdateLastLogin(user)
 	if err != nil {
 		return "", err
 	}

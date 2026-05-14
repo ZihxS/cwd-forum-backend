@@ -62,6 +62,10 @@ func (r *TagRepository) Update(tag *model.Tag) error {
 	return r.GormDB.Save(tag).Error
 }
 
+func (r *TagRepository) ClearThreads(tag *model.Tag) error {
+	return r.GormDB.Model(tag).Association("Threads").Clear()
+}
+
 func (r *TagRepository) Delete(id uint64) error {
 	return r.GormDB.Delete(&model.Tag{}, id).Error
 }

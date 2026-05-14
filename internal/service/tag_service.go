@@ -226,10 +226,9 @@ func (s *TagService) Delete(id uint64, ctx *gin.Context) error {
 		return errors.New("tag not found")
 	}
 
-	pruneErr := s.r.GormDB.Model(tag).Association("Threads").Clear()
-
-	if pruneErr != nil {
-		return pruneErr
+	err = s.r.ClearThreads(tag)
+	if err != nil {
+		return err
 	}
 
 	err = s.r.Delete(id)

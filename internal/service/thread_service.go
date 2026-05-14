@@ -275,17 +275,9 @@ func (s *ThreadService) Create(
 		AuthorID:   AuthorID,
 	}
 
-	var userExists bool
-
-	uErr := s.r.GormDB.
-		Model(&model.User{}).
-		Where("id = ?", AuthorID).
-		Select("count(*) > 0").
-		Row().
-		Scan(&userExists)
-
-	if uErr != nil {
-		return nil, nil, uErr
+	userExists, err := s.r.AuthorExists(AuthorID)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if !userExists {
@@ -298,65 +290,39 @@ func (s *ThreadService) Create(
 		thread.Slug = Slug + "-" + utils.String(5)
 	}
 
-	err := s.r.Create(thread)
-
-	if err != nil {
-		return nil, nil, err
-	}
-
 	var post *model.Post
 
 	if Content != "" {
 		post = &model.Post{
-			ThreadID: thread.ID,
 			Content:  Content,
 			AuthorID: AuthorID,
 		}
-
-		pErr := s.r.GormDB.Create(post).Error
-
-		if pErr != nil {
-			return thread, nil, pErr
-		}
-
-		delPostCacheStatus := s.r.RedisClient.Del(ctx, "posts", "post:id:"+strconv.FormatUint(uint64(post.ID), 10))
-
-		if delPostCacheStatus.Err() != nil {
-			return thread, post, delPostCacheStatus.Err()
-		}
-
 	}
 
-	if len(TagIDs) > 0 {
-		var tags []model.Tag
-
-		for _, tagID := range TagIDs {
-			var tag model.Tag
-
-			tErr := s.r.GormDB.First(&tag, tagID).Error
-
-			if tErr != nil {
-				return thread, post, nil
-			}
-
-			tags = append(tags, tag)
-
-			delTagCacheStatus := s.r.RedisClient.Del(ctx, "tag:id:"+strconv.FormatUint(uint64(tag.ID), 10), "tag:slug:"+tag.Slug)
-
-			if delTagCacheStatus.Err() != nil {
-				return thread, post, delTagCacheStatus.Err()
-			}
-
-		}
-
-		err = s.r.GormDB.Model(thread).Association("Tags").Append(&tags)
-
-		if err != nil {
-			return thread, post, err
-		}
+	result, err := s.r.CreateWithPostAndTags(thread, post, TagIDs)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	delStatus := s.r.RedisClient.Del(ctx, "threads", "thread:"+strconv.FormatUint(uint64(thread.ID), 10), "thread:slug:"+thread.Slug)
+	thread = result.Thread
+	post = result.Post
+
+	cacheKeys := []string{
+		"threads",
+		"thread:" + strconv.FormatUint(uint64(thread.ID), 10),
+		"thread:slug:" + thread.Slug,
+	}
+
+	if post != nil {
+		cacheKeys = append(cacheKeys, "posts", "post:id:"+strconv.FormatUint(uint64(post.ID), 10))
+	}
+
+	for _, tag := range result.Tags {
+		cacheKeys = append(cacheKeys, "tag:id:"+strconv.FormatUint(uint64(tag.ID), 10))
+		cacheKeys = append(cacheKeys, "tag:slug:"+tag.Slug)
+	}
+
+	delStatus := s.r.RedisClient.Del(ctx, cacheKeys...)
 
 	if delStatus.Err() != nil {
 		return thread, post, delStatus.Err()
@@ -435,32 +401,9 @@ func (s *ThreadService) Update(
 }
 
 func (s *ThreadService) Delete(ID uint64, ctx *gin.Context) error {
-	thread, err := s.r.GetThreadByID(ID)
-
+	thread, err := s.r.DeleteCascade(ID)
 	if err != nil {
 		return err
-	}
-
-	if thread == nil {
-		return errors.New("Thread not found")
-	}
-
-	posts := thread.Posts
-
-	if posts != nil && len(thread.Posts) > 0 {
-		for _, post := range posts {
-			err = s.r.GormDB.Delete(&post).Error
-
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	delErr := s.r.GormDB.Delete(&thread).Error
-
-	if delErr != nil {
-		return delErr
 	}
 
 	delThreadCacheStatus := s.r.RedisClient.Del(ctx, "threads", "thread:"+strconv.FormatUint(uint64(thread.ID), 10), "thread:slug:"+thread.Slug)
